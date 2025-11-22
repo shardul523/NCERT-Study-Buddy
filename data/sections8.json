@@ -68,5 +68,25 @@
         "pages": "47 - 49",
         "chapter": 4,
         "book": "History 8"
+    },
+    "8.5.1" : {
+        "pages" : "51 - 53",
+        "chapter" : 5,
+        "book" : "History 8"
+    },
+    "8.5.2" : {
+        "pages" : "53 - 55",
+        "chapter" : 5,
+        "book" : "History 8"
+    },
+    "8.5.3" : {
+        "pages" : "55 - 58",
+        "chapter" : 5,
+        "book" : "History 8"
+    },
+    "8.5.4": {
+        "pages": "58 - 60",
+        "chapter": 5,
+        "book":"History 8"
     }
 }
