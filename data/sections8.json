@@ -113,5 +113,20 @@
         "pages": "74 - 79",
         "chapter": 6,
         "book": "History 8"
+    },
+    "8.7.1": {
+        "pages": "81 - 86",
+        "chapter": 7,
+        "book": "History 8"
+    },
+    "8.7.2": {
+        "pages": "87 - 88",
+        "chapter": 7,
+        "book":"History 8"
+    },
+    "8.7.3": {
+        "pages": "88 - 91",
+        "chapter": 7,
+        "book": "History 8"
     }
 }
