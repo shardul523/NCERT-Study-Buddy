@@ -178,5 +178,35 @@
         "pages": "123 - 126",
         "chapter": 9,
         "book":"History 8"
+    },
+    "8.10.1": {
+        "pages": "128 - 129",
+        "chapter": 9,
+        "book":"History 8"
+    },
+    "8.10.2": {
+        "pages": "129 - 133",
+        "chapter": 9,
+        "book":"History 8"
+    },
+    "8.10.3": {
+        "pages": "133 - 134",
+        "chapter": 9,
+        "book":"History 8"
+    },
+    "8.10.4": {
+        "pages": "136 - 137",
+        "chapter": 9,
+        "book":"History 8"
+    },
+    "8.10.5": {
+        "pages": "138",
+        "chapter": 9,
+        "book":"History 8"
+    },
+    "8.10.6": {
+        "pages": "139",
+        "chapter": 9,
+        "book":"History 8"
     }
 }
