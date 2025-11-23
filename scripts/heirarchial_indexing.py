@@ -27,8 +27,6 @@ with open('/kaggle/input/ncert-history-textbooks-chunks/sections.json', 'r', enc
 with open('/kaggle/input/ncert-history-textbooks-chunks/paragraphs.json', 'r', encoding='utf-8') as file:
     paragraphs_data = json.load(file)
 
-from langchain_huggingface import HuggingFaceEmbeddings
-
 # Use BGE-M3 for better entity retrieval and multi-granularity support
 embeddings = HuggingFaceEmbeddings(
     model_name="BAAI/bge-m3",
@@ -84,12 +82,12 @@ retriever = ParentDocumentRetriever(
     parent_splitter=None
 )
 
-query = 'Plassey'
+# query = 'Plassey'
 
-print('\nQuerying: {query}')
-results = retriever.invoke(query)
+# print('\nQuerying: {query}')
+# results = retriever.invoke(query)
 
-if results:
-    print(f'Retrieved parent: {results[0].page_content}')
-else:
-    print('No results found')
+# if results:
+#     print(f'Retrieved parent: {results[0].page_content}')
+# else:
+#     print('No results found')
