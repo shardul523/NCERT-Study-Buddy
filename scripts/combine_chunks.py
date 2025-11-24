@@ -33,11 +33,26 @@ sections.update(section6)
 sections.update(section7)
 sections.update(section8)
 
+# final_paragraphs = []
+final_sections = {}
+
+for id, data in sections.items():
+    section_content = ''
+    for i, chunk in enumerate(paragraphs):
+        if chunk['parent_id'] == id:
+            section_content += f'{chunk['content']} \n'
+        paragraphs[i]['metadata'] = data
+    # sections[id]['content'] = section_content
+    final_sections[id] = {
+        'content': section_content,
+        'metadata': data
+    }
+
 # 4. Save Data
 with open('data/paragraphs.json', 'w', encoding='utf-8') as file:
     json.dump(paragraphs, file, indent=4)
 
 with open('data/sections.json', 'w', encoding='utf-8') as file:
-    json.dump(sections, file, indent=4)
+    json.dump(final_sections, file, indent=4)
 
 print("Data successfully loaded, merged, and saved to 'data/paragraphs.json' and 'data/sections.json'")
