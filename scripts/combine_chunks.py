@@ -41,7 +41,7 @@ for id, data in sections.items():
     for i, chunk in enumerate(paragraphs):
         if chunk['parent_id'] == id:
             section_content += f'{chunk['content']} \n'
-        paragraphs[i]['metadata'] = data
+            paragraphs[i]['metadata'] = data
     # sections[id]['content'] = section_content
     final_sections[id] = {
         'content': section_content,
