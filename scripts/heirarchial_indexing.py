@@ -1,93 +1,271 @@
 import json
-import os
-import shutil
+import uuid
 import pickle
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_chroma import Chroma
-from langchain_classic.storage import LocalFileStore, EncoderBackedStore
-from langchain_classic.retrievers import ParentDocumentRetriever
+from typing import List, Dict
+
+# LangChain Imports
+from flashrank import Ranker, RerankRequest  # <--- CRITICAL IMPORT
 from langchain_core.documents import Document
+from langchain_chroma import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_classic.storage import LocalFileStore, EncoderBackedStore
+from langchain_classic.retrievers import ParentDocumentRetriever, EnsembleRetriever, ContextualCompressionRetriever
+from langchain_community.retrievers import BM25Retriever
+from langchain_classic.retrievers.document_compressors import FlashrankRerank
 from langchain_classic.text_splitter import RecursiveCharacterTextSplitter
 
-# --- CONFIGURATION ---
-VECTOR_DB_PATH = "/kaggle/working/chroma_db"
-DOC_STORE_PATH = "/kaggle/working/doc_store"
 
-class PickleSerializer:
-    def dumps(self, obj): return pickle.dumps(obj)
-    def loads(self, data): return pickle.loads(data)
+# ==========================================
+# 1. SETUP
+# ==========================================
 
-# Cleanup for fresh run
-if os.path.exists(VECTOR_DB_PATH): shutil.rmtree(VECTOR_DB_PATH)
-if os.path.exists(DOC_STORE_PATH): shutil.rmtree(DOC_STORE_PATH)
+with open('data/paragraphs.json', 'r', encoding='utf-8') as file:
+    children_data = json.load(file)
 
-with open('/kaggle/input/ncert-history-textbooks-chunks/sections.json', 'r', encoding='utf-8') as file:
-    sections_data = json.load(file)
+with open('data/sections.json', 'r', encoding='utf-8') as file:
+    parents_data = json.load(file)
 
-with open('/kaggle/input/ncert-history-textbooks-chunks/paragraphs.json', 'r', encoding='utf-8') as file:
-    paragraphs_data = json.load(file)
+VECTOR_DB_PATH = "data/chroma_db"
+DOC_STORE_PATH = "data/doc_store"
 
-# Use BGE-M3 for better entity retrieval and multi-granularity support
-embeddings = HuggingFaceEmbeddings(
-    model_name="BAAI/bge-m3",
-    model_kwargs={'device': 'cpu'}, # Use 'cuda' if you have a GPU
-    encode_kwargs={'normalize_embeddings': True}
-)
+# ==========================================
+# 2. INGESTION: The "BYO-Chunks" Logic
+# ==========================================
+def build_retriever():
+    print("--- Building Stores ---")
+    
+    # A. Setup Embedding Model (Optimized for Study Data)
+    embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-m3")
 
-vector_store = Chroma(
-    collection_name='chunked_paragraphs',
-    embedding_function=embeddings,
-    persist_directory=VECTOR_DB_PATH
-)
+    # B. Setup Stores
+    # Parent Store: Holds the full text (RAM or Redis/FileStore for persistence)
+    parent_store = EncoderBackedStore(
+        store=LocalFileStore(DOC_STORE_PATH),
+        key_encoder=lambda x: str(x),
+        value_deserializer=pickle.loads,
+        value_serializer=pickle.dumps
+    )
+    # Child Store: The Vector Database
+    vectorstore = Chroma(
+        collection_name="study_chunks",
+        embedding_function=embeddings,
+        persist_directory=VECTOR_DB_PATH # Use disk persistence
+    )
 
-# store = LocalFileStore(DOC_STORE_PATH)
-store = EncoderBackedStore(
-    store=LocalFileStore(DOC_STORE_PATH),
-    key_encoder=lambda x: str(x),
-    value_deserializer=pickle.loads,
-    value_serializer=pickle.dumps
-)
+    # C. Ingest Parents (The "Answers")
+    # We must format them as (key, value) pairs for mset
+    parent_docs_to_store = []
+    parent_docs_list_for_bm25 = [] # Keep a list for BM25 indexing later
 
-print('Writing sections into Docstore')
-section_docs_to_store = []
+    for p_id, p_data in parents_data.items():
+        doc = Document(
+            page_content=p_data["content"],
+            metadata=p_data["metadata"]
+        )
+        parent_docs_to_store.append((p_id, doc))
+        parent_docs_list_for_bm25.append(doc)
+    
+    parent_store.mset(parent_docs_to_store)
 
-for id, data in sections_data.items():
-    section_content = ""
-    for chunk in paragraphs_data:
-        if chunk['parent_id'] == id:
-            section_content += chunk['content'] + '\n'
-    doc = Document(page_content=section_content, metadata=data)
-    section_docs_to_store.append((id, doc))
+    # D. Ingest Children (The "Search Index")
+    child_docs_to_store = []
+    for c_data in children_data:
+        doc = Document(
+            page_content=c_data["content"],
+            metadata=c_data["metadata"]
+        )
+        # CRITICAL: Link Child -> Parent
+        # The PDR looks for the key 'doc_id' in metadata to find the parent
+        doc.metadata["doc_id"] = c_data["parent_id"]
+        child_docs_to_store.append(doc)
+    
+    # Add children to VectorDB
+    # Note: We use add_documents directly on the vectorstore, bypassing the 
+    # automatic splitting of the PDR since we already have chunks.
+    vectorstore.add_documents(child_docs_to_store)
 
-store.mset(section_docs_to_store)
+    print(f"--- Ingested {len(parent_docs_to_store)} Parents and {len(child_docs_to_store)} Children ---")
 
-print('Wiring paragraphs into Vector store')
-para_docs_to_store = []
+    # ==========================================
+    # 3. RETRIEVER ASSEMBLY
+    # ==========================================
+    
+    # A. The Vector Retriever (Parent Document Retriever)
+    # Since we manually populated the stores, we just initialize the class
+    # to act as the interface.
+    pdr_retriever = ParentDocumentRetriever(
+        vectorstore=vectorstore,
+        docstore=parent_store,
+        child_splitter=RecursiveCharacterTextSplitter(chunk_size=100, chunk_overlap=0), # Disable auto-splitting
+        parent_splitter=None # Disable auto-splitting
+    )
+    # Force it to return the Top 5 Parents
+    pdr_retriever.search_kwargs = {"k": 5}
 
-for chunk in paragraphs_data:
-    metadata = {
-        'doc_id': chunk['parent_id'],
-        'chunk_id': chunk['id']
-    }
+    # B. The Keyword Retriever (BM25)
+    # We index the PARENT documents here. 
+    # Why? So that both retrievers return full sections to the Reranker.
+    bm25_retriever = BM25Retriever.from_documents(parent_docs_list_for_bm25)
+    bm25_retriever.k = 5
 
-    doc = Document(page_content=chunk['content'], metadata=metadata)
-    para_docs_to_store.append(doc)
+    # C. The Hybrid Retriever (Ensemble)
+    # Weights: 0.6 Vector (Concepts) / 0.4 Keyword (Exact Terms)
+    ensemble_retriever = EnsembleRetriever(
+        retrievers=[pdr_retriever, bm25_retriever],
+        weights=[0.6, 0.4]
+    )
 
-vector_store.add_documents(para_docs_to_store)
+    # D. The Reranker (FlashRank)
+    # The "Judge" that picks the absolute best answer from the mixed list
+    compressor = FlashrankRerank(model="ms-marco-MiniLM-L-12-v2")
+    
+    final_retriever = ContextualCompressionRetriever(
+        base_compressor=compressor,
+        base_retriever=ensemble_retriever
+    )
 
-retriever = ParentDocumentRetriever(
-    vectorstore=vector_store,
-    docstore=store,
-    child_splitter=RecursiveCharacterTextSplitter(chunk_size=100, chunk_overlap=0),
-    parent_splitter=None
-)
+    return final_retriever
 
-# query = 'Plassey'
+# ==========================================
+# 4. EXECUTION
+# ==========================================
+if __name__ == "__main__":
+    retriever = build_retriever()
+    
+    query = "Tell me about trade in the Harappan civilization"
+    
+    # Example 1: Standard Search
+    print(f"\nQuery: {query}")
+    docs = retriever.invoke(query)
+    
+    for i, doc in enumerate(docs):
+        print(f"\n[Result {i+1}] (Score: {doc.metadata.get('relevance_score', 'N/A')}):")
+        print(f"Source: {doc.metadata.get('book')} - Ch {doc.metadata.get('chapter')}")
+        print(f"Content Preview: {doc.page_content[:100]}...")
 
-# print('\nQuerying: {query}')
-# results = retriever.invoke(query)
+    # Example 2: Metadata Filtered Search (For your Self-Ask Agent)
+    # NOTE: To pass filters to the PDR inside an Ensemble/Compression pipeline is tricky.
+    # The robust way for your Agent is to access the underlying PDR directly when filtering is needed.
+    
+    print("\n--- Testing Filtered Access (Direct PDR) ---")
+    # Access the vector retriever inside the stack
+    # 1. Get the Ensemble Retriever from the generic wrapper
+    # We use getattr to safely get it, defaulting to None if missing
+    ensemble = getattr(retriever, "base_retriever", None)
 
-# if results:
-#     print(f'Retrieved parent: {results[0].page_content}')
-# else:
-#     print('No results found')
+    # 2. Get the list of retrievers from the Ensemble
+    # The EnsembleRetriever stores them in the attribute 'retrievers'
+    underlying_retrievers = getattr(ensemble, "retrievers", [])
+
+    # 3. Access the first one (Vector Store / PDR)
+    pdr = underlying_retrievers[0]
+    # pdr = retriever.base_retriever.retrievers[0] 
+    
+    # We filter on the CHILD chunks (vector store), but get PARENT docs back
+    filtered_docs = pdr.vectorstore.similarity_search(
+        query, 
+        k=3, 
+        filter={"book": "History 6"} # This matches the metadata we added to children
+    )
+    # Note: similarity_search returns children. To get parents with filtering, 
+    # you use the pdr.invoke with pre-filtering, but PDR doesn't natively support 
+    # dynamic filters easily in invoke(). 
+    
+    # PRO TIP for Agents:
+    # Use the 'vectorstore' directly for filtered checks if the Agent knows the book:
+    print(f"Direct Vector Hit: {filtered_docs[0].page_content}")
+
+
+# import json
+# import os
+# import shutil
+# import pickle
+# from langchain_huggingface import HuggingFaceEmbeddings
+# from langchain_chroma import Chroma
+# from langchain_classic.storage import LocalFileStore, EncoderBackedStore
+# from langchain_classic.retrievers import ParentDocumentRetriever
+# from langchain_core.documents import Document
+# from langchain_classic.text_splitter import RecursiveCharacterTextSplitter
+
+# # --- CONFIGURATION ---
+# VECTOR_DB_PATH = "/kaggle/working/chroma_db"
+# DOC_STORE_PATH = "/kaggle/working/doc_store"
+
+# class PickleSerializer:
+#     def dumps(self, obj): return pickle.dumps(obj)
+#     def loads(self, data): return pickle.loads(data)
+
+# # Cleanup for fresh run
+# if os.path.exists(VECTOR_DB_PATH): shutil.rmtree(VECTOR_DB_PATH)
+# if os.path.exists(DOC_STORE_PATH): shutil.rmtree(DOC_STORE_PATH)
+
+# with open('/kaggle/input/ncert-history-textbooks-chunks/sections.json', 'r', encoding='utf-8') as file:
+#     sections_data = json.load(file)
+
+# with open('/kaggle/input/ncert-history-textbooks-chunks/paragraphs.json', 'r', encoding='utf-8') as file:
+#     paragraphs_data = json.load(file)
+
+# # Use BGE-M3 for better entity retrieval and multi-granularity support
+# embeddings = HuggingFaceEmbeddings(
+#     model_name="BAAI/bge-m3",
+#     model_kwargs={'device': 'cpu'}, # Use 'cuda' if you have a GPU
+#     encode_kwargs={'normalize_embeddings': True}
+# )
+
+# vector_store = Chroma(
+#     collection_name='chunked_paragraphs',
+#     embedding_function=embeddings,
+#     persist_directory=VECTOR_DB_PATH
+# )
+
+# # store = LocalFileStore(DOC_STORE_PATH)
+# store = EncoderBackedStore(
+#     store=LocalFileStore(DOC_STORE_PATH),
+#     key_encoder=lambda x: str(x),
+#     value_deserializer=pickle.loads,
+#     value_serializer=pickle.dumps
+# )
+
+# print('Writing sections into Docstore')
+# section_docs_to_store = []
+
+# for id, data in sections_data.items():
+#     section_content = ""
+#     for chunk in paragraphs_data:
+#         if chunk['parent_id'] == id:
+#             section_content += chunk['content'] + '\n'
+#     doc = Document(page_content=section_content, metadata=data)
+#     section_docs_to_store.append((id, doc))
+
+# store.mset(section_docs_to_store)
+
+# print('Wiring paragraphs into Vector store')
+# para_docs_to_store = []
+
+# for chunk in paragraphs_data:
+#     metadata = {
+#         'doc_id': chunk['parent_id'],
+#         'chunk_id': chunk['id']
+#     }
+
+#     doc = Document(page_content=chunk['content'], metadata=metadata)
+#     para_docs_to_store.append(doc)
+
+# vector_store.add_documents(para_docs_to_store)
+
+# retriever = ParentDocumentRetriever(
+#     vectorstore=vector_store,
+#     docstore=store,
+#     child_splitter=RecursiveCharacterTextSplitter(chunk_size=100, chunk_overlap=0),
+#     parent_splitter=None
+# )
+
+# # query = 'Plassey'
+
+# # print('\nQuerying: {query}')
+# # results = retriever.invoke(query)
+
+# # if results:
+# #     print(f'Retrieved parent: {results[0].page_content}')
+# # else:
+# #     print('No results found')
