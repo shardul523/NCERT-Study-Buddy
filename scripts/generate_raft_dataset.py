@@ -8,7 +8,9 @@ from typing import List, Dict, Any
 # Try importing the Google Gen AI library
 try:
     import google.generativeai as genai
+    from google.generativeai.generative_models import GenerativeModel
     from google.ai.generativelanguage_v1beta.types import content
+    from google.generativeai.types import GenerationConfig
 except ImportError:
     print("Error: 'google-generativeai' library not found. Please install it using: pip install google-generativeai")
     exit(1)
@@ -20,20 +22,19 @@ INPUT_FILE = 'data/sections.json'
 OUTPUT_FILE = 'data/raft_dataset.jsonl'
 NUM_DISTRACTORS = 4
 MAX_ORACLES = 5 
-SAMPLE_SIZE = 100
+SAMPLE_SIZE = 200
 
 # !!! PASTE YOUR GEMINI API KEY HERE !!!
-GEMINI_API_KEY = "AIzaSyBmfofqNAwvzCu3OqsNnRvHEcbVTIOWLzQ" 
-
+GEMINI_API_KEY = "" 
 # Model Configuration
 MODEL_NAME = "gemini-2.5-flash" # Cost-effective and fast
-GENERATION_CONFIG = {
-    "temperature": 0.7,
-    "top_p": 0.95,
-    "top_k": 64,
-    "max_output_tokens": 8192,
-    "response_mime_type": "application/json",
-}
+GENERATION_CONFIG = GenerationConfig(
+    temperature=0.7,
+    top_p=0.95,
+    top_k=64,
+    max_output_tokens=8192,
+    response_mime_type="application/json",
+)
 
 # ==========================================
 # DATA LOADING & PROCESSING
@@ -102,12 +103,12 @@ Output Format (JSON):
   "answer": "The final answer"
 }}
 """
-
     try:
-        model = genai.GenerativeModel(
+        model = GenerativeModel(
             model_name=MODEL_NAME,
             generation_config=GENERATION_CONFIG
         )
+        
         
         response = model.generate_content(prompt)
         
